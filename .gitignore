@@ -1,0 +1,27 @@
+# Virtuelle Umgebung & Bytecode
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Lokale Datenbanken & CSV
+*.db
+*.sqlite
+*.sqlite3
+*.csv
+
+# Cache & Temp-Dateien
+.cache_ocr/
+temp_*
+.temp_*
+.DS_Store
+
+# Backups
+*.backup
+*_backup/
+
+# Sensible Belege & Testdateien
+archiv/
+test.png
+test_scan.pdf
+inbox/
