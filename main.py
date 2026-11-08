@@ -79,7 +79,7 @@ def process_document(file_path: str):
         # Markdown-Datei mit modernem pathlib im Wissensarchiv anlegen
         p = Path(file_path)
         md_path = ARCHIV_WISSEN / f"{p.stem}.md"
-
+        ARCHIV_WISSEN.mkdir(parents=True, exist_ok=True)
         with open(md_path, "w", encoding="utf-8") as f:
             f.write(f"# Notiz / Dokument: {p.name}\n\n")
             f.write(f"- **Quelldatei:** `{p.name}`\n")
@@ -121,24 +121,20 @@ def process_inbox(folder_path: str = "inbox"):
             stats["ABSTAIN"] += 1
             continue
         stats[result] += 1
-        # Ziel-Aktion anhand des Ergebnisses ausführen
-        if result == "KNOWLEDGE":
-            # Originalfoto nach erfolgreicher Digitalisierung restlos entfernen
-            file_path.unlink()
-            print("    -> Originalfoto gelöscht (Digitaler Text liegt als .md im Archiv)")
-        else:
-            if result == "SAVED":
-                target_dir = ARCHIV_RECHNUNGEN
-            elif result == "DUPLICATE":
-                target_dir = ARCHIV_DUPLIKATE
-            else:  # ABSTAIN
-                target_dir = ARCHIV_ABGEWIESEN
+        if result == "SAVED":
+            target_dir = ARCHIV_RECHNUNGEN
+        elif result == "DUPLICATE":
+            target_dir = ARCHIV_DUPLIKATE
+        elif result == "KNOWLEDGE":
+            target_dir = ARCHIV_WISSEN
+        else:  # ABSTAIN
+            target_dir = ARCHIV_ABGEWIESEN
 
-            # Ordner automatisch anlegen, falls noch nicht vorhanden
-            target_dir.mkdir(parents=True, exist_ok=True)
-            # Datei physisch verschieben
-            shutil.move(str(file_path), target_dir / file_path.name)
-            print(f"    -> Archiviert nach: {target_dir / file_path.name}")
+        # Ordner automatisch anlegen, falls noch nicht vorhanden
+        target_dir.mkdir(parents=True, exist_ok=True)
+        # Datei physisch verschieben
+        shutil.move(str(file_path), target_dir / file_path.name)
+        print(f"    -> Archiviert nach: {target_dir / file_path.name}")
     # Abschlussbericht
     print("\n" + "=" * 45)
     print("           STAPELLAUF-ABSCHLUSSBERICHT       ")
