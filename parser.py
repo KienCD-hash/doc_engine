@@ -2,6 +2,41 @@ import re
 from typing import Optional, Dict, Any
 
 
+def normalize_amount(raw: str) -> Optional[float]:
+    """
+    Wandelt Beträge aus Rechnungen robust in float um.
+    Beherrscht:
+      - Deutsches Format: '1.234,56' -> 1234.56
+      - Standard Deutsch: '14,76'    -> 14.76
+      - US / Cloud:       '1,234.56' -> 1234.56
+      - Einfaches Float:  '14.76'    -> 14.76
+    """
+    if not raw:
+        return None
+    s = raw.strip().replace(" ", "")
+
+    # Haben wir sowohl Punkt als auch Komma? (z. B. '1.234,56' oder '1,234.56')
+    if "." in s and "," in s:
+        # Der letzte Trenner entscheidet!
+        if s.rfind(",") > s.rfind("."):
+            # Deutsches Format (1.234,56): Punkt weg, Komma zu Punkt
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            # US Format (1,234.56): Komma weg
+            s = s.replace(",", "")
+    elif "," in s:
+        # Nur Komma (z. B. 14,76)
+        s = s.replace(",", ".")
+
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+AMOUNT_PATTERN = r"(?:\d{1,3}(?:[.,]\d{3})+|\d+)[,.]\s*\d{2}(?!\.\d)(?!\s*%)"
+
+
 def parse_invoice(text: str) -> Optional[Dict[str, Any]]:
     """
     Parst Kernfelder aus einem Rechnungstext.
@@ -108,13 +143,12 @@ def parse_invoice(text: str) -> Optional[Dict[str, Any]]:
 
     # A) Höchste Priorität: Expliziter Zahlbetrag des Kunden ("zu zahlen: 5,93", "Zahlung erfolgt: 11,94")
     zu_zahlen_match = re.search(
-        r"(?:zu\s*zahlen|Zahlbetrag|Endbetrag|Zahlung\s+erfolgt)[\s:•\-\*]*(?:EUR|€)?[\s:•\-\*]*\n*(?:[^\d\n]+\n)?\s*(?:EUR|€)?[\s:•\-\*]*(\d+)[,.]\s*(\d{2})(?!\.\d)(?!\s*%)",
+        rf"(?:zu\s*zahlen|Zahlbetrag|Endbetrag|Zahlung\s+erfolgt)[\s:•\-\*]*(?:EUR|€)?[\s:•\-\*]*\n*(?:[^\d\n]+\n)?\s*(?:EUR|€)?[\s:•\-\*]*({AMOUNT_PATTERN})",
         text,
         re.IGNORECASE,
     )
     if zu_zahlen_match:
-        total_amount = float(
-            f"{zu_zahlen_match.group(1)}.{zu_zahlen_match.group(2)}")
+        total_amount = normalize_amount(zu_zahlen_match.group(1))
 
     # B) Kartenzahlungs-Beleg (immer den höchsten EUR-Betrag im Kartenbereich nehmen)
     if not total_amount:
@@ -125,58 +159,61 @@ def parse_invoice(text: str) -> Optional[Dict[str, Any]]:
         )
         if card_block:
             card_vals = [
-                float(f"{m[0]}.{m[1]}")
-                for m in re.findall(r"(?:EUR|€)\s*(\d+)[,.]\s*(\d{2})(?!\.\d)(?!\s*%)", card_block.group(0))
+                normalize_amount(val)
+                for val in re.findall(rf"(?:EUR|€)\s*({AMOUNT_PATTERN})", card_block.group(0))
             ]
-            if card_vals:
-                total_amount = max(card_vals)
+            valid_card_vals = [v for v in card_vals if v is not None]
+            if valid_card_vals:
+                total_amount = max(valid_card_vals)
 
     # C) BackWerk-Muster: 'Total' für Barzahler ohne nachfolgendes Kartenterminal
     if not total_amount:
         total_match = re.search(
-            r"\bTotal\b[\s:•\-\*]*(?:[^\d\n]+\n)?\s*(?:EUR|€)?[\s:•\-\*]*(\d+)[,.]\s*(\d{2})(?!\.\d)(?!\s*%)",
+            rf"\bTotal\b[\s:•\-\*]*(?:[^\d\n]+\n)?\s*(?:EUR|€)?[\s:•\-\*]*({AMOUNT_PATTERN})",
             text,
             re.IGNORECASE,
         )
         if total_match:
-            total_amount = float(
-                f"{total_match.group(1)}.{total_match.group(2)}")
+            total_amount = normalize_amount(total_match.group(1))
 
     # D) Steuertabelle mit 2 Brutto-Teilbeträgen (z. B. 19% + 7% bei Kaufland & Netto)
     if not total_amount:
         brutto_table = re.search(
-            r"\bBRUTTO\b[\s:•\-\*]*\n*(\d+[,.]\d{2})\s*\n*(\d+[,.]\d{2})", text, re.IGNORECASE
+            rf"\bBRUTTO\b[\s:•\-\*]*\n*({AMOUNT_PATTERN})\s*\n*({AMOUNT_PATTERN})", text, re.IGNORECASE
         )
         if brutto_table:
-            val1 = float(brutto_table.group(1).replace(",", "."))
-            val2 = float(brutto_table.group(2).replace(",", "."))
-            total_amount = round(val1 + val2, 2)
+            val1 = normalize_amount(brutto_table.group(1))
+            val2 = normalize_amount(brutto_table.group(2))
+            if val1 is not None and val2 is not None:
+                total_amount = round(val1 + val2, 2)
+
     # D2) Barzahlungs-Trio (Summe, Bar gegeben, Rückgeld: 50.00 - 32.50 = 17.50)
     if not total_amount:
-        pattern_trio = r"(?:EUR|€)?\s*(\d+[,.]\s*\d{2})\s*\n*(?:EUR|€)?\s*-?\s*(\d+[,.]\s*\d{2})\s*\n*(?:EUR|€)?\s*(\d+[,.]\s*\d{2})"
+        pattern_trio = rf"(?:EUR|€)?\s*({AMOUNT_PATTERN})\s*\n*(?:EUR|€)?\s*-?\s*({AMOUNT_PATTERN})\s*\n*(?:EUR|€)?\s*({AMOUNT_PATTERN})"
         for m in re.finditer(pattern_trio, text):
-            v1 = float(m.group(1).replace(",", ".").replace(" ", ""))
-            v2 = float(m.group(2).replace(",", ".").replace(" ", ""))
-            v3 = float(m.group(3).replace(",", ".").replace(" ", ""))
-            if round(v2 - v3, 2) == v1 and v1 > 0:
+            v1 = normalize_amount(m.group(1))
+            v2 = normalize_amount(m.group(2))
+            v3 = normalize_amount(m.group(3))
+            if v1 and v2 and v3 and round(v2 - v3, 2) == v1 and v1 > 0:
                 total_amount = v1
                 break
 
     # E) Mehrspalten-Block (Brutto, Gesamt, Summe, Betrag)
-    # Wichtig: Erlaubt Steuerbuchstaben wie 'A'/'B' hinter Preisen (z. B. "3,98 B")
     if not total_amount:
         candidates = []
         pattern_multi = (
             r"(?:\b(?:Total|Gesamt(?:betrag|summe)?|Endbetrag|Rechnungsbetrag|Zahlbetrag|Brutto(?:betrag)?|zu\s*zahlen|girocard|Kartenzahlung)\b|Summe(?!\s*(?:mwst|netto|steuer))|Betrag)"
             r"(?!\s*(?:mwst|netto|steuer|rabatt|gespart|preisvorteil|ersparnis))"
-            r"[\s:•\-\*]*(?:EUR|€)?[\s:•\-\*]*\n*(?:[^\n]+\n){0,3}?\s*((?:(?:EUR|€)?[\s:•\-\*]*\d+[,.]\s*\d{2}(?!\.\d)(?!\s*%)[A-Za-z]?\s*\n*)+)"
+            r"[\s:•\-\*]*(?:EUR|€)?[\s:•\-\*]*\n*(?:[^\n]+\n){0,3}?\s*"
+            r"((?:(?:EUR|€)?[\s:•\-\*]*" +
+            AMOUNT_PATTERN + r"[A-Za-z]?\s*\n*)+)"
         )
         for m in re.finditer(pattern_multi, text, re.IGNORECASE):
-            raw_vals = [float(f"{val[0]}.{val[1]}") for val in re.findall(
-                r"(\d+)[,.]\s*(\d{2})(?!\.\d)(?!\s*%)", m.group(1))]
+            raw_vals = [normalize_amount(val) for val in re.findall(
+                AMOUNT_PATTERN, m.group(1))]
+            raw_vals = [v for v in raw_vals if v is not None]
             if not raw_vals:
                 continue
-            # Falls Barzahlung / Rückgabe im Block steht: Die erste Zahl ist die Summe (Folgewerte sind Gegeben / Rückgeld)
             if re.search(r"\b(?:BAR|Bar|Gegeben|Rückgabe|Rückgeld)\b", m.group(0)):
                 candidates.append(raw_vals[0])
             else:
@@ -184,19 +221,20 @@ def parse_invoice(text: str) -> Optional[Dict[str, Any]]:
 
         if candidates:
             total_amount = max(candidates)
-
     # F) Fallback Einzelzeile
     if not total_amount:
         pattern_single = (
             r"(?:\b(?:Total|Gesamt(?:betrag|summe)?|Endbetrag|Rechnungsbetrag|Zahlbetrag|Brutto(?:betrag)?|zu\s*zahlen|girocard|Kartenzahlung)\b|Summe(?!\s*(?:mwst|netto|steuer))|Betrag)"
             r"(?!\s*(?:mwst|netto|steuer|rabatt|gespart|preisvorteil|ersparnis))"
-            r"[\s:•\-\*]*(?:[^\n]+\n){0,3}?\s*(?:EUR|€)?[\s:•\-\*]*(\d+)[,.]\s*(\d{2})(?!\.\d)(?!\s*%)"
+            r"[\s:•\-\*]*(?:[^\n]+\n){0,3}?\s*(?:EUR|€)?[\s:•\-\*]*(" +
+            AMOUNT_PATTERN + r")"
         )
         for m in re.finditer(pattern_single, text, re.IGNORECASE):
-            candidates.append(float(f"{m.group(1)}.{m.group(2)}"))
+            val = normalize_amount(m.group(1))
+            if val is not None:
+                candidates.append(val)
         if candidates:
             total_amount = max(candidates)
-
     if not total_amount:
         return None
 
