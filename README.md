@@ -6,7 +6,7 @@
 [![Cost](https://img.shields.io/badge/Cloud%20Cost-0.00%20%E2%82%AC-success.svg)]()
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A high-performance, local-first document processing pipeline engineered for German cash register receipts (Kassenbons) and DIN A4 invoices. Runs 100% on-device on Apple Silicon (M1/M2/M3) using the native macOS Vision framework and mathematical validation.
+A high-performance, local-first document processing pipeline engineered for German cash register receipts (Kassenbons) and DIN A4 invoices. Runs 100% on-device on Apple Silicon (M1/M2/M3) using the native macOS Vision framework, mathematical validation, and GDPR-compliant local redaction.
 
 ---
 
@@ -114,6 +114,28 @@ Run the fleet validation suite across all archived receipts:
 python test_suite.py
 ```
 
+### 4. Anonymize Sensitive Documents (GDPR / PII Redaction)
+Black out names, IBANs, phone numbers, and cashier details before sharing or cloud storage:
+
+```bash
+# Redact a single document
+python redactor.py invoice.jpg anonymized.jpg
+
+# Batch redact an entire directory
+python redactor.py inbox/ anonymisiert/
+```
+
+### 5. Utility: Split Multi-Page PDFs & Merge Receipts
+Split scanned PDF batches into individual receipts, or merge booked receipts into a single tax export PDF:
+
+```bash
+# Split a multi-page scan batch into inbox/
+python pdf_tools.py split batch_scan.pdf inbox/
+
+# Merge all receipts into a single monthly PDF
+python pdf_tools.py merge monthly_report.pdf archiv/rechnungen/
+```
+
 ---
 
 ## Repository Structure
@@ -132,6 +154,8 @@ doc_engine/
 ├── parser.py          # German number normalizer & cashier arithmetic
 ├── classifier.py      # Document classifier and abstain gatekeeper
 ├── database.py        # SQLite storage and CSV export engine
+├── redactor.py        # Automated GDPR / PII redaction (Apple Vision bboxes)
+├── pdf_tools.py       # Multi-page PDF splitter & batch document merger
 └── test_suite.py      # Regression test runner & fleet benchmark
 ```
 
