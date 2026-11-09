@@ -48,21 +48,6 @@ def parse_invoice(text: str) -> Optional[Dict[str, Any]]:
             return None
 
     # 1. Rechnungsnummer ermitteln
-    inv_pattern = (
-        r"\b(?:Rech(?:nung)?\.?[\-\s]*(?:s?nummer|s?nr\.?)|"
-        r"Auft[\s\-]*rag(?:s?nummer|s?[\-\s]*nr\.?)?|"
-        r"Transaktion(?:s?nummer|s?[\-\s]*nr\.?)?|"
-        r"TA\b[\-\s]*(?:nummer|nr\.?)?|"
-        r"Genehmigung(?:s?nummer|s?[\-\s]*nr\.?)?|"
-        r"Trace[\-\s]*(?:nummer|nr\.?)?|"
-        r"Bele[gs][\-\s]*(?:s?nummer|s?nr\.?)?|"
-        r"Buchung[\-\s]*(?:s?code|s?nummer|s?nr\.?)?|"
-        r"(?:Kassen[\-\s]*)?bo[rn][\-\s]*(?:s?nummer|s?nr\.?)?|"
-        r"BNr|"
-        r"TSE[\-\s]*(?:Transaktion|Transaktionsnummer))"
-        r"[\s.:#-]*\n*(?:[^\d\n]+\n*)*?([A-Za-z0-9\-]*\d+[A-Za-z0-9\-]*)"
-    )
-
     invoice_number = None
 
     # Spezialfall: 3-Spalten-Kassenkopf (z. B. EDEKA "Pos Bed Bon \n 105 105 9577") -> 3. Wert ist die Bon-Nummer!
@@ -74,27 +59,49 @@ def parse_invoice(text: str) -> Optional[Dict[str, Any]]:
     # Spezialfall: Buchungscode für Tickets (z. B. Stern und Kreisschiffahrt)
     buchung_match = re.search(
         r"\bBuchungs(?:code|nummer|nr)[\s.:#-]*([A-Za-z0-9]{5,})", text, re.IGNORECASE)
+
+    # Spezialfall: Mehrteilige Auftragsnummer mit Leerzeichen (z. B. FONIC / LOTTO: "07 17 054020001 792")
+    auftrag_match = re.search(
+        r"\bAuftragsnummer[\s.:#-]*\n*([0-9\s]{10,30})", text, re.IGNORECASE)
+
+    # Spezialfall: 22-stelliger Kassen-Barcode (z. B. HIT Meschede / Supermärkte)
+    barcode_match = re.search(r"\b(001\d{18,22})\b", text)
+
     if buchung_match:
         invoice_number = buchung_match.group(1)
-    if pos_bed_bon:
+    if pos_bed_bon and not invoice_number:
         invoice_number = pos_bed_bon.group(1)
+    if auftrag_match and not invoice_number:
+        invoice_number = auftrag_match.group(1).strip().split("\n")[0].strip()
+    if barcode_match and not invoice_number:
+        invoice_number = barcode_match.group(1)
 
     if not invoice_number:
+        inv_pattern = (
+            r"\b(?:Rech(?:nung)?\.?[\-\s]*(?:s?nummer|s?nr\.?)|"
+            r"Auft[\s\-]*rag(?:s?nummer|s?[\-\s]*nr\.?)?|"
+            r"Transaktion(?:s?nummer|s?[\-\s]*nr\.?)?|"
+            r"TA\b[\-\s]*(?:nummer|nr\.?)?|"
+            r"Genehmigung(?:s?nummer|s?[\-\s]*nr\.?)?|"
+            r"Trace[\-\s]*(?:nummer|nr\.?)?|"
+            r"Bele[gs][\-\s]*(?:s?nummer|s?nr\.?)?|"
+            r"Buchung[\-\s]*(?:s?code|s?nummer|s?nr\.?)?|"
+            r"(?:Kassen[\-\s]*)?bo[rn][\-\s]*(?:s?nummer|s?nr\.?)?|"
+            r"BNr|"
+            r"TSE[\-\s]*(?:Transaktion|Transaktionsnummer))"
+            r"[\s.:#-]*\n*(?:[^\d\n]+\n*)*?([A-Za-z0-9\-]*\d+[A-Za-z0-9\-]*)"
+        )
         for m in re.finditer(inv_pattern, text, re.IGNORECASE):
             candidate = m.group(1).strip()
-
-            # Schutzfilter A: Folgt direkt ein Komma (z. B. "11, 34"), ist es ein Preis!
             rest_after = text[m.end():m.end() + 10]
             if re.match(r"\s*[,.]\s*\d{1,2}", rest_after):
                 continue
-            # Schutzfilter B: Einzelne Ziffern (z. B. "6") sind Zeilenumbruch-Reste, keine Belegnummern
             if len(candidate) < 3 and candidate.isdigit():
                 continue
             invoice_number = candidate
             break
 
     if not invoice_number:
-        # Fallback für Büro-Rechnungen
         inv_match = re.search(
             r"\b(?:Rechnung|RECHNUNG)\b[\s\S]{0,100}?\bNummer[\s.:#-]+(?:\n[^\d\n]+:\s*)*\n?([A-Za-z0-9\-]*\d+[A-Za-z0-9\-]*)",
             text,
@@ -138,7 +145,7 @@ def parse_invoice(text: str) -> Optional[Dict[str, Any]]:
     if not iso_date:
         return None
 
-        # 3. Gesamtbetrag ermitteln
+    # 3. Gesamtbetrag ermitteln
     total_amount = None
 
     # A) Höchste Priorität: Expliziter Zahlbetrag des Kunden ("zu zahlen: 5,93", "Zahlung erfolgt: 11,94")
@@ -198,6 +205,27 @@ def parse_invoice(text: str) -> Optional[Dict[str, Any]]:
                 total_amount = v1
                 break
 
+    # D3) Steuer-Trio (Netto + MwSt = Umsatz/Brutto/Summe: z. B. EDEKA 7.26 + 0.51 = 7.77, HIT 5.33 + 0.77 = 6.10)
+    if not total_amount:
+        tax_header = re.search(
+            r"(?:NETTO|Netto|Steuer)[\s\S]{0,80}?(?:MwSt|MWST)[\s\S]{0,80}?(?:UMSATZ|Brutto|BRUTTO|SUMME|Summe)",
+            text,
+            re.IGNORECASE,
+        )
+        if tax_header:
+            block = text[tax_header.start():tax_header.start() + 400]
+            amounts = [normalize_amount(m.group(0))
+                       for m in re.finditer(AMOUNT_PATTERN, block)]
+            valid_amounts = [a for a in amounts if a is not None]
+            valid_trios = []
+            for i in range(len(valid_amounts) - 2):
+                v1, v2, v3 = valid_amounts[i], valid_amounts[i +
+                                                             1], valid_amounts[i + 2]
+                if round(v1 + v2, 2) == v3:
+                    valid_trios.append(v3)
+            if valid_trios:
+                total_amount = max(valid_trios)
+
     # E) Mehrspalten-Block (Brutto, Gesamt, Summe, Betrag)
     if not total_amount:
         candidates = []
@@ -218,11 +246,12 @@ def parse_invoice(text: str) -> Optional[Dict[str, Any]]:
                 candidates.append(raw_vals[0])
             else:
                 candidates.extend(raw_vals)
-
         if candidates:
             total_amount = max(candidates)
+
     # F) Fallback Einzelzeile
     if not total_amount:
+        candidates = []
         pattern_single = (
             r"(?:\b(?:Total|Gesamt(?:betrag|summe)?|Endbetrag|Rechnungsbetrag|Zahlbetrag|Brutto(?:betrag)?|zu\s*zahlen|girocard|Kartenzahlung)\b|Summe(?!\s*(?:mwst|netto|steuer))|Betrag)"
             r"(?!\s*(?:mwst|netto|steuer|rabatt|gespart|preisvorteil|ersparnis))"
@@ -235,6 +264,7 @@ def parse_invoice(text: str) -> Optional[Dict[str, Any]]:
                 candidates.append(val)
         if candidates:
             total_amount = max(candidates)
+
     if not total_amount:
         return None
 
@@ -251,5 +281,5 @@ def parse_invoice(text: str) -> Optional[Dict[str, Any]]:
         "invoice_number": invoice_number,
         "date": iso_date,
         "total_amount": total_amount,
-        "status": status
+        "status": status,
     }
