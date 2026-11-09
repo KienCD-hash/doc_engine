@@ -25,3 +25,11 @@ archiv/
 test.png
 test_scan.pdf
 inbox/
+
+# Generierte Ordner & Medien im Root
+anonymisiert/
+*.jpg
+*.jpeg
+*.png
+*.heic
+*.pdf
