@@ -1,62 +1,141 @@
 # doc_engine
 
-A local-first document processing pipeline for German cash register receipts and invoices.
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
+[![Platform](https://img.shields.io/badge/Platform-macOS%20Apple%20Silicon-black.svg)]()
+[![Privacy](https://img.shields.io/badge/GDPR-100%25%20Local-green.svg)]()
+[![Cost](https://img.shields.io/badge/Cloud%20Cost-0.00%20%E2%82%AC-success.svg)]()
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-## Background and Motivation
+A high-performance, local-first document processing pipeline engineered for German cash register receipts (Kassenbons) and DIN A4 invoices. Runs 100% on-device on Apple Silicon (M1/M2/M3) using the native macOS Vision framework and mathematical validation.
 
-Most cloud-based document parsers rely on large vision-language models (VLMs) or external OCR APIs, introducing latency, recurring token costs, and data privacy concerns under GDPR.
+---
 
-In Germany, the Cash Register Security Ordinance (KassenSichV / BSI TR-03153) mandates that modern electronic cash registers print a QR code with cryptographically signed transaction data. This includes transaction numbers, timestamps, tax rates, and gross totals.
+## Architecture
 
-`doc_engine` exploits this standard by implementing a two-stage extraction architecture:
-1. Fast-Path (TSE / QR Code): Decodes structured KassenSichV payloads directly via the macOS Vision framework. Processing takes under 5 milliseconds with zero OCR errors.
-2. Fallback (Apple Vision OCR): For older receipts or DIN A4 invoices without a QR code, the engine falls back to on-device OCR running on the Apple Neural Engine, followed by a tax-arithmetic parser (validating Netto + MwSt = Brutto).
+```mermaid
+flowchart TD
+    A[Incoming Document\nPDF / HEIC / JPG / PNG] --> B[Classifier & Abstain Gatekeeper]
+    B -->|Duplex Bleed-Through / Illegible| C[archiv/abgewiesen/]
+    B -->|Knowledge / Study Notes| D[archiv/wissen/]
+    B -->|Invoice / Receipt| E{Stage 1: TSE Fast-Path\nKassenSichV QR Code}
+    
+    E -->|Decoded in < 5ms| F[Verify Payload & BSI Specs]
+    E -->|No QR / Crumpled| G[Stage 2: Apple Vision OCR\nApple Neural Engine]
+    
+    G --> H[Cashier Arithmetic Engine\nNetto + MwSt = Brutto\nRegister Barcodes & Order IDs]
+    
+    F --> I[Deduplication Check\nSHA-256 & Invoice Number]
+    H --> I
+    
+    I -->|Duplicate| J[archiv/duplikate/]
+    I -->|New Valid Record| K[(SQLite Database\ndoc_engine.db)]
+    
+    K --> L[CSV Export\ninvoices_export.csv]
+    K --> M[archiv/rechnungen/]
+```
 
-Documents are classified before parsing. Valid invoices and receipts are written to a local SQLite database and exported to CSV. Research notes are archived as Markdown. Documents with insufficient or illegible text (such as duplex scanner bleed-through pages) are rejected via an explicit abstain pattern to prevent database corruption.
+---
+
+## Background & Motivation
+
+Most cloud-based document parsers rely on large vision-language models (VLMs) or external OCR APIs, introducing high latency (2–5s per page), recurring per-token costs, and severe GDPR compliance risks when handling sensitive corporate financial data.
+
+In Germany, the **Cash Register Security Ordinance** (*KassenSichV / BSI TR-03153*) mandates that electronic cash registers print a cryptographically verifiable QR code containing transaction numbers, timestamps, tax breakdowns, and signatures.
+
+`doc_engine` exploits this standard through a resilient **two-stage cascade**:
+1. **Fast-Path (TSE / QR Code):** Decodes structured KassenSichV payloads directly via the macOS Vision framework in under 5 milliseconds with **0% OCR error rate**.
+2. **Fallback (Neural Engine OCR + Arithmetic Engine):** For older cash registers, crumpled slips, or DIN A4 invoices without QR codes, the engine runs native OCR on the Apple Neural Engine, followed by an algebraic tax validator ($Netto + MwSt = Brutto$), multi-part order number extractors, and 22-digit register barcode parsers.
+3. **Data Loss Prevention & Abstain Pattern:** Rejects unparseable or blank duplex-scanner bleed-through pages without data loss, archiving them safely to `archiv/abgewiesen/`.
+
+---
 
 ## Fleet Benchmark
 
-Benchmarked on an Apple M1 Mac mini across 50 real-world thermal receipts, folded slips, and invoices:
+Benchmarked on an **Apple M1 Mac mini (16 GB)** across a fleet of real-world crumpled thermal receipts, supermarket slips (EDEKA, Lidl, Kaufland, Penny, HIT), travel tickets, and invoices:
 
-| Metric | Result |
+| Metric | Benchmark Result |
 |---|---|
-| Total test documents | 50 |
-| Accuracy | 50 / 50 passed (0 failed) |
-| Cold run (initial OCR parsing) | 6.76 seconds (~135 ms / doc) |
-| Warm run (cached OCR / TSE) | < 1.5 seconds |
-| External API calls | 0 |
-| Cloud costs | 0.00 EUR |
+| **Total Test Fleet** | **54 documents** (HEIC, JPG, PNG, PDF) |
+| **Accuracy** | **54 / 54 passed (100% pass rate, 0 failures)** |
+| **Total Fleet Runtime** | **5.75 seconds** (~106 ms / document) |
+| **TSE Fast-Path Latency** | **< 5 ms** per receipt |
+| **External API Calls** | **0** |
+| **Cloud / Token Costs** | **0.00 €** |
+| **GDPR / Data Privacy** | **100% on-device (Zero data leaves the machine)** |
+
+---
 
 ## Requirements
 
-* macOS 12+ (Apple Silicon recommended for native Vision framework acceleration)
-* Python 3.10+
+* **macOS 12+** (Apple Silicon M1/M2/M3 recommended for Neural Engine hardware acceleration)
+* **Python 3.10+**
 
-## Setup
+---
 
+## Installation
+
+```bash
+# Clone the repository
 git clone https://github.com/KienCD-hash/doc_engine.git
 cd doc_engine
+
+# Set up virtual environment
 python3 -m venv .venv
 source .venv/bin/activate
+
+# Install dependencies
 pip install -r requirements.txt
+```
+
+---
 
 ## Usage
 
-1. Place incoming documents (PDF, PNG, JPG, HEIC) into the inbox/ directory.
-2. Run the processing pipeline:
-   python main.py
-3. Run the regression test suite:
-   python test_suite.py
+### 1. Ingest Documents
+Drop incoming receipts or invoices (PDF, PNG, JPG, HEIC) into the `inbox/` directory:
+
+```bash
+cp /path/to/receipts/*.jpg inbox/
+```
+
+### 2. Run Pipeline
+Execute the batch processor:
+
+```bash
+python main.py
+```
+
+Processed invoices are booked into `doc_engine.db`, exported to `invoices_export.csv`, and organized into clean archive directories.
+
+### 3. Run Regression Test Suite
+Run the fleet validation suite across all archived receipts:
+
+```bash
+python test_suite.py
+```
+
+---
 
 ## Repository Structure
 
-* main.py - Orchestration pipeline and archive routing
-* tse.py - KassenSichV / BSI TR-03153 barcode detection and payload parser
-* extractor.py - Apple Vision OCR and PDF rasterization
-* parser.py - Regex parsing and cashier-arithmetic validation
-* classifier.py - Document classification and abstain gatekeeper
-* database.py - SQLite schema, queries, and CSV exporter
-* test_suite.py - Fleet benchmark and regression test runner
+```text
+doc_engine/
+├── inbox/             # Drop folder for incoming documents
+├── archiv/            # Automated archive storage
+│   ├── rechnungen/    # Successfully booked invoices & receipts
+│   ├── wissen/        # Extracted knowledge & study notes
+│   ├── duplikate/     # Detected duplicate receipts
+│   └── abgewiesen/    # Rejected / unparseable documents
+├── main.py            # Batch orchestration and routing logic
+├── tse.py             # KassenSichV / BSI TR-03153 QR-Code fast-path
+├── extractor.py       # Native Apple Vision OCR & PDF rasterizer
+├── parser.py          # German number normalizer & cashier arithmetic
+├── classifier.py      # Document classifier and abstain gatekeeper
+├── database.py        # SQLite storage and CSV export engine
+└── test_suite.py      # Regression test runner & fleet benchmark
+```
+
+---
 
 ## License
 
