@@ -56,6 +56,9 @@ def parse_invoice(text: str) -> Optional[Dict[str, Any]]:
         text,
         re.IGNORECASE,
     )
+    # Spezialfall: 2-Spalten-Kassenkopf (z. B. Press & Books: "Pos Bon \n 001 8082")
+    pos_bon = re.search(r"Pos\s+Bon\s*\n\s*\d+\s+(\d+)", text, re.IGNORECASE)
+
     # Spezialfall: Buchungscode für Tickets (z. B. Stern und Kreisschiffahrt)
     buchung_match = re.search(
         r"\bBuchungs(?:code|nummer|nr)[\s.:#-]*([A-Za-z0-9]{5,})", text, re.IGNORECASE)
@@ -71,10 +74,17 @@ def parse_invoice(text: str) -> Optional[Dict[str, Any]]:
         invoice_number = buchung_match.group(1)
     if pos_bed_bon and not invoice_number:
         invoice_number = pos_bed_bon.group(1)
+    if pos_bon and not invoice_number:
+        invoice_number = pos_bon.group(1)
     if auftrag_match and not invoice_number:
         invoice_number = auftrag_match.group(1).strip().split("\n")[0].strip()
     if barcode_match and not invoice_number:
         invoice_number = barcode_match.group(1)
+
+    # Spezialfall: Parkschein / Kurzbeleg mit schlichter "Nr. 1677" (mind. 4 Ziffern gegen Hausnummern)
+    nr_match = re.search(r"\bNr\.?[\s.:#-]*(\d{4,})\b", text, re.IGNORECASE)
+    if nr_match and not invoice_number:
+        invoice_number = nr_match.group(1)
 
     if not invoice_number:
         inv_pattern = (
@@ -88,6 +98,7 @@ def parse_invoice(text: str) -> Optional[Dict[str, Any]]:
             r"Buchung[\-\s]*(?:s?code|s?nummer|s?nr\.?)?|"
             r"(?:Kassen[\-\s]*)?bo[rn][\-\s]*(?:s?nummer|s?nr\.?)?|"
             r"BNr|"
+            r"Re[tf]erenz(?:nummer|nr\.?)?|"
             r"TSE[\-\s]*(?:Transaktion|Transaktionsnummer))"
             r"[\s.:#-]*\n*(?:[^\d\n]+\n*)*?([A-Za-z0-9\-]*\d+[A-Za-z0-9\-]*)"
         )
@@ -264,6 +275,15 @@ def parse_invoice(text: str) -> Optional[Dict[str, Any]]:
                 candidates.append(val)
         if candidates:
             total_amount = max(candidates)
+    # G) Fallback: Euro-Symbol direkt beim Betrag (z. B. Parkschein "€ \n 2.00")
+    if not total_amount:
+        euro_match = re.search(
+            rf"(?:EUR|€)\s*\n*\s*({AMOUNT_PATTERN})",
+            text,
+            re.IGNORECASE,
+        )
+        if euro_match:
+            total_amount = normalize_amount(euro_match.group(1))
 
     if not total_amount:
         return None

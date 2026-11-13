@@ -20,6 +20,8 @@ SIGNALS_INVOICE = [
     "brutto",
     "netto",
     "rückgeld",
+    "parkschein",
+    "bezahlt",
 ]
 
 SIGNALS_KNOWLEDGE = [
